@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Delivery Bot Simulation</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Use Inter font */
+        body {
+            font-family: 'Inter', sans-serif;
+            overflow: hidden; /* Prevent scrollbars */
+        }
+        /* Center canvas and add border */
+        canvas {
+            display: block;
+            margin: 0 auto;
+            background-color: #f0f0f0; /* Light grey background */
+            border: 1px solid #ccc;
+            border-radius: 0.5rem; /* Rounded corners */
+        }
+        /* Style buttons */
+        button {
+            transition: background-color 0.3s ease;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 flex flex-col items-center justify-center min-h-screen p-4">
+
+    <h1 class="text-2xl font-bold mb-4 text-gray-800">Delivery Bot Simulation</h1>
+
+    <canvas id="simulationCanvas" width="600" height="400" class="mb-4 rounded-lg shadow-md"></canvas>
+
+    <div class="flex space-x-4">
+        <button id="startButton" class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg shadow">
+            Start
+        </button>
+        <button id="stopButton" class="bg-red-500 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg shadow">
+            Stop
+        </button>
+        <button id="resetButton" class="bg-gray-500 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg shadow">
+            Reset
+        </button>
+        <button id="addBotButton" class="bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg shadow">
+            Add Bot
+        </button>
+    </div>
+
+    <div id="messageArea" class="mt-4 text-sm text-gray-600 h-6"></div>
+
+    <script>
+        // --- Configuration ---
+        const canvas = document.getElementById('simulationCanvas');
+        const ctx = canvas.getContext('2d');
+        const startButton = document.getElementById('startButton');
+        const stopButton = document.getElementById('stopButton');
+        const resetButton = document.getElementById('resetButton');
+        const addBotButton = document.getElementById('addBotButton');
+        const messageArea = document.getElementById('messageArea');
+
+        const gridSize = 20; // Size of each grid cell
+        const botRadius = gridSize / 2.5; // Radius of the bots
+        const botSpeed = 1; // Pixels per frame
+        const numInitialBots = 5;
+        const colors = ['#3b82f6', '#ef4444', '#10b981', '#f97316', '#8b5cf6', '#ec4899', '#6366f1']; // Blue, Red, Green, Orange, Purple, Pink, Indigo
+
+        let bots = [];
+        let animationFrameId = null;
+        let isRunning = false;
+        let botIdCounter = 0;
+
+        // --- Bot Class ---
+        class Bot {
+            constructor(id, x, y, color) {
+                this.id = id;
+                this.x = x;
+                this.y = y;
+                this.color = color;
+                this.destination = this.getRandomDestination();
+                this.path = []; // Future: for pathfinding
+                this.state = 'idle'; // 'idle', 'moving', 'waiting'
+                this.waitTurns = 0; // How long a bot has been waiting
+                this.maxWaitTurns = 50; // Prevent indefinite waiting
+            }
+
+            // Get a random destination within the canvas bounds
+            getRandomDestination() {
+                const padding = gridSize; // Keep destination away from edges
+                return {
+                    x: Math.floor(Math.random() * (canvas.width - padding * 2)) + padding,
+                    y: Math.floor(Math.random() * (canvas.height - padding * 2)) + padding
+                };
+            }
+
+            // Draw the bot and its destination
+            draw() {
+                // Draw destination (small X)
+                ctx.beginPath();
+                ctx.moveTo(this.destination.x - 5, this.destination.y - 5);
+                ctx.lineTo(this.destination.x + 5, this.destination.y + 5);
+                ctx.moveTo(this.destination.x + 5, this.destination.y - 5);
+                ctx.lineTo(this.destination.x - 5, this.destination.y + 5);
+                ctx.strokeStyle = this.color;
+                ctx.lineWidth = 1;
+                ctx.stroke();
+                ctx.closePath();
+
+
+                // Draw bot body
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, botRadius, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.fill();
+                ctx.strokeStyle = 'black';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+                ctx.closePath();
+
+                 // Draw bot ID (optional, can clutter)
+                // ctx.fillStyle = 'white';
+                // ctx.font = '8px Arial';
+                // ctx.textAlign = 'center';
+                // ctx.textBaseline = 'middle';
+                // ctx.fillText(this.id, this.x, this.y);
+            }
+
+            // Calculate the next intended position
+            getNextPosition() {
+                if (!this.destination) return { x: this.x, y: this.y };
+
+                const dx = this.destination.x - this.x;
+                const dy = this.destination.y - this.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+
+                if (distance < botSpeed) {
+                    return { x: this.destination.x, y: this.destination.y }; // Arrived
+                }
+
+                // Calculate movement step
+                const moveX = (dx / distance) * botSpeed;
+                const moveY = (dy / distance) * botSpeed;
+
+                return { x: this.x + moveX, y: this.y + moveY };
+            }
+
+            // Move the bot towards its destination
+            move(nextPos) {
+                 const dx = this.destination.x - this.x;
+                 const dy = this.destination.y - this.y;
+                 const distance = Math.sqrt(dx * dx + dy * dy);
+
+                 // Check if arrived
+                 if (distance < botRadius) {
+                     this.state = 'idle';
+                     this.destination = this.getRandomDestination(); // Get new destination
+                     return;
+                 }
+
+                 // Update position
+                 this.x = nextPos.x;
+                 this.y = nextPos.y;
+                 this.state = 'moving';
+            }
+        }
+
+        // --- Collision Detection ---
+        function checkCollision(botA, nextPosA, otherBots) {
+            for (const botB of otherBots) {
+                if (botA.id === botB.id) continue; // Don't check against self
+
+                // Check collision with other bots' current positions
+                const distCurrent = Math.hypot(nextPosA.x - botB.x, nextPosA.y - botB.y);
+                if (distCurrent < botRadius * 2) {
+                     // Collision with a stationary or moving bot's current spot
+                    return botB; // Collision detected
+                }
+
+                // Check collision with other bots' *next* intended positions (if they are moving)
+                if (botB.state === 'moving' || botB.state === 'intending_to_move') {
+                    const nextPosB = botB.nextPotentialPos || {x: botB.x, y: botB.y}; // Use precalculated pos if available
+                    const distNext = Math.hypot(nextPosA.x - nextPosB.x, nextPosA.y - nextPosB.y);
+                    if (distNext < botRadius * 2) {
+                         // Potential collision with where another bot is heading
+                        return botB; // Collision detected
+                    }
+                }
+            }
+            return null; // No collision
+        }
+
+        // --- Simulation Loop ---
+        function simulationStep() {
+            if (!isRunning) return;
+
+            // 1. Clear canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Optional: Draw Grid
+            // ctx.strokeStyle = '#e0e0e0';
+            // ctx.lineWidth = 0.5;
+            // for (let x = 0; x < canvas.width; x += gridSize) {
+            //     ctx.beginPath();
+            //     ctx.moveTo(x, 0);
+            //     ctx.lineTo(x, canvas.height);
+            //     ctx.stroke();
+            // }
+            // for (let y = 0; y < canvas.height; y += gridSize) {
+            //     ctx.beginPath();
+            //     ctx.moveTo(0, y);
+            //     ctx.lineTo(canvas.width, y);
+            //     ctx.stroke();
+            // }
+
+
+            // 2. Plan Moves & Detect Collisions
+            const intendedMoves = []; // Store { bot, nextPos }
+            bots.forEach(bot => {
+                bot.nextPotentialPos = null; // Clear previous potential position
+                if (bot.state === 'idle' || bot.state === 'moving') {
+                    const nextPos = bot.getNextPosition();
+                     // Check if already at destination
+                    const dx = bot.destination.x - bot.x;
+                    const dy = bot.destination.y - bot.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    if (distance < botRadius) {
+                        bot.state = 'idle';
+                        bot.destination = bot.getRandomDestination(); // Get new destination immediately
+                        intendedMoves.push({ bot, nextPos: {x: bot.x, y: bot.y}, collision: null, priority: false });
+                    } else {
+                        bot.nextPotentialPos = nextPos; // Store potential move
+                        bot.state = 'intending_to_move'; // Mark as intending to move
+                        intendedMoves.push({ bot, nextPos, collision: null, priority: false });
+                    }
+                } else if (bot.state === 'waiting') {
+                    // Still waiting, don't plan a move yet
+                     intendedMoves.push({ bot, nextPos: {x: bot.x, y: bot.y}, collision: null, priority: false });
+                }
+            });
+
+             // Simple Priority: Lower ID goes first in case of conflict
+             // More sophisticated logic could be added here (e.g., distance to destination)
+            intendedMoves.sort((a, b) => a.bot.id - b.bot.id);
+
+            // Check for collisions based on intended moves
+            const finalMoves = [];
+            const occupiedNextPositions = new Set(); // Track positions claimed in this step
+
+            intendedMoves.forEach(moveData => {
+                const { bot, nextPos } = moveData;
+
+                if (bot.state !== 'intending_to_move') {
+                     finalMoves.push({ bot, nextPos: { x: bot.x, y: bot.y }, moveAllowed: false }); // Bot is idle or already waiting
+                     return;
+                }
+
+                let collisionDetected = false;
+                const posKey = `${Math.round(nextPos.x)},${Math.round(nextPos.y)}`; // Key for occupied check
+
+                // Check against bots that have already decided to move in this step
+                if (occupiedNextPositions.has(posKey)) {
+                    collisionDetected = true; // Another bot already claimed this spot
+                } else {
+                    // Check against all other bots (current and *potential* next positions)
+                    const otherBots = bots.filter(b => b.id !== bot.id);
+                    for (const otherBot of otherBots) {
+                         // Check collision with other bots' current positions
+                         const distCurrent = Math.hypot(nextPos.x - otherBot.x, nextPos.y - otherBot.y);
+                         if (distCurrent < botRadius * 2) {
+                             collisionDetected = true;
+                             break;
+                         }
+                         // Check collision with other bots' *next* intended positions (more robust check)
+                         const otherIntendedMove = intendedMoves.find(im => im.bot.id === otherBot.id);
+                         if (otherIntendedMove && otherIntendedMove.bot.state === 'intending_to_move') {
+                             const otherNextPos = otherIntendedMove.nextPos;
+                             const distNext = Math.hypot(nextPos.x - otherNextPos.x, nextPos.y - otherNextPos.y);
+                             if (distNext < botRadius * 2) {
+                                // Check priority - lower ID wins
+                                if (bot.id > otherBot.id) {
+                                     collisionDetected = true;
+                                     break;
+                                }
+                             }
+                         }
+                    }
+                }
+
+
+                if (!collisionDetected) {
+                    finalMoves.push({ bot, nextPos, moveAllowed: true });
+                    occupiedNextPositions.add(posKey); // Claim this spot
+                } else {
+                    finalMoves.push({ bot, nextPos: { x: bot.x, y: bot.y }, moveAllowed: false }); // Collision, stay put
+                }
+            });
+
+
+            // 3. Execute Moves
+            finalMoves.forEach(({ bot, nextPos, moveAllowed }) => {
+                 if (moveAllowed) {
+                    bot.move(nextPos);
+                    bot.waitTurns = 0; // Reset wait counter if moved successfully
+                } else {
+                    // If bot was intending to move but couldn't, set to waiting
+                    if (bot.state === 'intending_to_move') {
+                         bot.state = 'waiting';
+                         bot.waitTurns++;
+                         // Optional: If waiting too long, try a new destination
+                         if (bot.waitTurns > bot.maxWaitTurns) {
+                             console.warn(`Bot ${bot.id} waited too long, assigning new destination.`);
+                             bot.destination = bot.getRandomDestination();
+                             bot.waitTurns = 0;
+                             bot.state = 'idle'; // Try again next cycle
+                         }
+                    } else if (bot.state === 'waiting') {
+                         bot.waitTurns++; // Increment wait counter
+                          // Optional: If waiting too long, try a new destination
+                         if (bot.waitTurns > bot.maxWaitTurns) {
+                             console.warn(`Bot ${bot.id} waited too long, assigning new destination.`);
+                             bot.destination = bot.getRandomDestination();
+                             bot.waitTurns = 0;
+                             bot.state = 'idle'; // Try again next cycle
+                         }
+                    }
+                    // If bot was already idle, it remains idle.
+                }
+            });
+
+            // 4. Draw Bots
+            bots.forEach(bot => bot.draw());
+
+            // 5. Request next frame
+            animationFrameId = requestAnimationFrame(simulationStep);
+        }
+
+        // --- Control Functions ---
+        function startSimulation() {
+            if (!isRunning) {
+                showMessage("Simulation started.");
+                isRunning = true;
+                // Ensure bots start in 'idle' or 'moving' state if stopped mid-wait
+                bots.forEach(bot => {
+                    if (bot.state === 'waiting') bot.state = 'idle';
+                });
+                if (!animationFrameId) {
+                    animationFrameId = requestAnimationFrame(simulationStep);
+                }
+            }
+        }
+
+        function stopSimulation() {
+            if (isRunning) {
+                showMessage("Simulation stopped.");
+                isRunning = false;
+                if (animationFrameId) {
+                    cancelAnimationFrame(animationFrameId);
+                    animationFrameId = null;
+                }
+            }
+        }
+
+        function resetSimulation() {
+            stopSimulation();
+            showMessage("Simulation reset.");
+            bots = []; // Clear existing bots
+            botIdCounter = 0; // Reset ID counter
+            createBots(numInitialBots); // Create new initial bots
+            // Initial draw
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            bots.forEach(bot => bot.draw());
+        }
+
+        function addBot() {
+            if (bots.length >= 20) { // Limit max bots
+                 showMessage("Maximum number of bots reached.");
+                 return;
+            }
+            const newBot = createSingleBot();
+            bots.push(newBot);
+            showMessage(`Added Bot ${newBot.id}. Total: ${bots.length}`);
+             // Draw the new bot immediately if simulation is stopped
+            if (!isRunning) {
+                 newBot.draw();
+            }
+        }
+
+        function createSingleBot() {
+             const id = botIdCounter++;
+             const startX = Math.random() * canvas.width;
+             const startY = Math.random() * canvas.height;
+             const color = colors[id % colors.length];
+             return new Bot(id, startX, startY, color);
+        }
+
+        function createBots(numBots) {
+            for (let i = 0; i < numBots; i++) {
+                bots.push(createSingleBot());
+            }
+        }
+
+        function showMessage(msg) {
+            messageArea.textContent = msg;
+        }
+
+        // --- Event Listeners ---
+        startButton.addEventListener('click', startSimulation);
+        stopButton.addEventListener('click', stopSimulation);
+        resetButton.addEventListener('click', resetSimulation);
+        addBotButton.addEventListener('click', addBot);
+
+        // --- Initialization ---
+        window.onload = () => {
+            resetSimulation(); // Initialize with default bots and draw them
+            showMessage("Press Start to begin.");
+        };
+
+    </script>
+
+</body>
+</html>
